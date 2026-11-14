@@ -129,6 +129,9 @@ object Session {
     val userId: String? get() = get("user_id")
     val email: String? get() = get("email")
     val name: String? get() = get("name")
+    var termsAccepted: Boolean
+        get() = prefs.getBoolean("terms_v1", false)
+        set(v) = prefs.edit().putBoolean("terms_v1", v).apply()
     var skippedLogin: Boolean
         get() = prefs.getBoolean("skipped", false)
         set(v) = prefs.edit().putBoolean("skipped", v).apply()
@@ -167,8 +170,10 @@ object Session {
 
     fun logout() {
         val skipped = skippedLogin
+        val terms = termsAccepted
         prefs.edit().clear().apply()
         skippedLogin = skipped
+        termsAccepted = terms
     }
 
     private fun sha256(s: String): String =
@@ -278,6 +283,14 @@ object Repo {
         } else {
             Supa.request("DELETE", "/rest/v1/saved?listing_id=eq.${enc(listingId)}", token = t, prefer = "return=minimal")
         }
+    }
+
+    suspend fun report(message: String) {
+        val t = Session.token() ?: throw IllegalStateException("Please login first.")
+        Supa.request(
+            "POST", "/rest/v1/support_requests",
+            JSONObject().put("message", message).toString(), t, "return=minimal"
+        )
     }
 
     suspend fun requestAccountDeletion() {

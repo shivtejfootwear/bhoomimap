@@ -97,6 +97,8 @@ fun App(activity: ComponentActivity) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
     var interestFor by remember { mutableStateOf<Listing?>(null) }
+    var page by rememberSaveable { mutableStateOf<String?>(null) }
+    var consentFor by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
 
@@ -124,7 +126,7 @@ fun App(activity: ComponentActivity) {
         }
     }
 
-    fun login(after: () -> Unit = {}) {
+    fun doLogin(after: () -> Unit) {
         scope.launch {
             try {
                 Session.googleSignIn(activity)
@@ -137,6 +139,10 @@ fun App(activity: ComponentActivity) {
                 toast(loginError(e))
             }
         }
+    }
+
+    fun login(after: () -> Unit = {}) {
+        if (Session.termsAccepted) doLogin(after) else consentFor = after
     }
 
     val askInterest: (Listing) -> Unit = { l ->
@@ -164,9 +170,22 @@ fun App(activity: ComponentActivity) {
 
     LaunchedEffect(Unit) { reload() }
 
-    if (!loggedIn && !skipped) {
+    val openPage: (String) -> Unit = { page = it }
+
+    if (page != null) {
+        BackHandler { page = null }
+        when (page) {
+            "terms" -> LegalScreen("Terms of Use", LegalText.terms) { page = null }
+            "privacy" -> LegalScreen("Privacy Policy", LegalText.privacy) { page = null }
+            else -> SafetyScreen(loggedIn, onBack = { page = null }, onOpen = openPage)
+        }
+    } else if (!loggedIn && !skipped) {
         LoginScreen(
-            onGoogle = { login() },
+            onGoogle = {
+                Session.termsAccepted = true
+                doLogin {}
+            },
+            onOpen = openPage,
             onSkip = {
                 Session.skippedLogin = true
                 skipped = true
@@ -184,6 +203,7 @@ fun App(activity: ComponentActivity) {
                 onBack = { openId = null },
                 onInterested = { askInterest(open) },
                 onSave = { toggleSave(open) },
+                onSafety = { page = "safety" },
             )
         } else {
             Scaffold(
@@ -247,11 +267,24 @@ fun App(activity: ComponentActivity) {
                                 }
                             },
                             onOpen = { openId = it.id },
+                            onPage = openPage,
                         )
                     }
                 }
             }
         }
+    }
+
+    consentFor?.let { after ->
+        ConsentDialog(
+            onAccept = {
+                Session.termsAccepted = true
+                consentFor = null
+                doLogin(after)
+            },
+            onDismiss = { consentFor = null },
+            onOpen = { consentFor = null; page = it },
+        )
     }
 
     interestFor?.let { l ->
@@ -284,11 +317,12 @@ fun App(activity: ComponentActivity) {
 // ---------------- Login ----------------
 
 @Composable
-fun LoginScreen(onGoogle: () -> Unit, onSkip: () -> Unit) {
+fun LoginScreen(onGoogle: () -> Unit, onOpen: (String) -> Unit, onSkip: () -> Unit) {
+    var terms by rememberSaveable { mutableStateOf(false) }
+    var broker by rememberSaveable { mutableStateOf(false) }
     Column(
-        Modifier.fillMaxSize().background(Ground).padding(24.dp),
+        Modifier.fillMaxSize().background(Ground).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 36.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
     ) {
         Box(
             Modifier.size(96.dp).clip(RoundedCornerShape(26.dp)).background(Green),
@@ -299,18 +333,22 @@ fun LoginScreen(onGoogle: () -> Unit, onSkip: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         Text("BhoomiMap", fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
-        Text("Find verified land and plots in Solapur", color = Muted, fontSize = 15.sp, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(36.dp))
-        Button(onClick = onGoogle, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(12.dp)) {
+        Text(TAGLINE, color = Green, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(20.dp))
+        HowItWorksCard()
+        Spacer(Modifier.height(14.dp))
+        ConsentChecks(terms, { terms = it }, broker, { broker = it }, onOpen)
+        Spacer(Modifier.height(10.dp))
+        Button(onClick = onGoogle, enabled = terms && broker, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(12.dp)) {
             Text("Continue with Google", fontSize = 16.sp)
         }
         Spacer(Modifier.height(10.dp))
         TextButton(onClick = onSkip, modifier = Modifier.fillMaxWidth().height(48.dp)) {
             Text("Skip for now – just browse the map")
         }
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(12.dp))
         Text(
-            "By continuing you agree to our Terms and Privacy Policy.",
+            "We use your name and phone only to contact you about plots you choose.",
             fontSize = 12.sp, color = Muted, textAlign = TextAlign.Center,
         )
     }
@@ -448,7 +486,7 @@ fun MapScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Tag("FOR SALE · ${picked.kindLabel}", Color(0xFFFDECEC), Color(0xFFB91C1C))
                         Spacer(Modifier.weight(1f))
-                        if (picked.verified) Text("Verified by Team", color = Green, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        if (picked.verified) Text("Checked by Team", color = Green, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Text(picked.title.ifBlank { Fmt.shortArea(picked.areaSqft) }, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                     Text(
@@ -513,6 +551,7 @@ fun DetailsScreen(
     onBack: () -> Unit,
     onInterested: () -> Unit,
     onSave: () -> Unit,
+    onSafety: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var detail by remember(l.id) { mutableStateOf<ListingDetail?>(null) }
@@ -600,11 +639,15 @@ fun DetailsScreen(
                     checking -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     d != null -> {
                         MeasurementsCard(d, l.areaSqft, l.roadFt)
-                        PhotoSection("Verified by Team Photos", d.teamPhotos, true)
+                        PhotoSection("Team Site Photos", d.teamPhotos, true)
                         PhotoSection("Owner Photos", d.ownerPhotos, false)
                     }
                     else -> LockedCard(lead, onInterested)
                 }
+                OutlinedButton(onClick = onSafety, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
+                    Text("Safe Payment Rules & Help")
+                }
+                Text(DISCLAIMER, fontSize = 12.sp, color = Muted, lineHeight = 18.sp)
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -644,7 +687,7 @@ fun MeasurementsCard(d: ListingDetail, areaSqft: Double, roadFt: Double) {
     InfoCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Plot Measurements", fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            Text("Verified by Team", fontSize = 12.sp, color = Green, fontWeight = FontWeight.SemiBold)
+            Text("Checked by Team", fontSize = 12.sp, color = Green, fontWeight = FontWeight.SemiBold)
         }
         Box(Modifier.fillMaxWidth().height(220.dp)) {
             Canvas(Modifier.fillMaxSize().padding(horizontal = 70.dp, vertical = 30.dp)) {
@@ -706,7 +749,7 @@ fun PhotoSection(title: String, photos: List<String>, team: Boolean) {
                         )
                         if (team) {
                             Icon(
-                                Icons.Default.CheckCircle, contentDescription = "Verified by Team", tint = Green,
+                                Icons.Default.CheckCircle, contentDescription = "Taken by our team", tint = Green,
                                 modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).background(Color.White, RoundedCornerShape(12.dp)),
                             )
                         }
@@ -771,7 +814,7 @@ fun InterestDialog(l: Listing, onDismiss: () -> Unit, onSend: (String, String) -
                     modifier = Modifier.fillMaxWidth(),
                 )
                 err?.let { Text(it, color = Red, fontSize = 13.sp) }
-                Text("Our team will call you within 24 hours.", fontSize = 12.sp, color = Muted)
+                Text("By sending, you allow our team to call you about this plot.", fontSize = 12.sp, color = Muted)
             }
         },
         confirmButton = {
@@ -836,6 +879,7 @@ fun ProfileScreen(
     onLogout: () -> Unit,
     onDelete: () -> Unit,
     onOpen: (Listing) -> Unit,
+    onPage: (String) -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     Column(
@@ -873,7 +917,14 @@ fun ProfileScreen(
                 Text("Delete Account", color = Red)
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
+        OutlinedButton(onClick = { onPage("safety") }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
+            Text("Safety & Help")
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+            TextButton(onClick = { onPage("terms") }) { Text("Terms of Use") }
+            TextButton(onClick = { onPage("privacy") }) { Text("Privacy Policy") }
+        }
         Text("BhoomiMap v${BuildConfig.VERSION_NAME} · Solapur", fontSize = 12.sp, color = Muted)
     }
     if (confirmDelete) {

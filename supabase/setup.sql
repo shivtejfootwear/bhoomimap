@@ -91,6 +91,17 @@ alter table public.account_deletion_requests enable row level security;
 create policy "request own deletion" on public.account_deletion_requests
   for insert to authenticated with check (user_id = auth.uid());
 
+create table public.support_requests (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  message text not null check (char_length(message) between 5 and 1000),
+  status text not null default 'open',
+  created_at timestamptz not null default now()
+);
+alter table public.support_requests enable row level security;
+create policy "user sends own report" on public.support_requests
+  for insert to authenticated with check (user_id = auth.uid() and status = 'open');
+
 -- STEP 5 (test only): one sample plot in Solapur city
 with p as (
   insert into public.listings (title, kind, place, area_sqft, facing, road_width_ft, verified, boundary, status)
