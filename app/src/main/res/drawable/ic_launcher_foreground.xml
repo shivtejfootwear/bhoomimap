@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- folded map -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,38 L44,33 L64,38 L78,33 L78,72 L64,77 L44,72 L30,77 Z" />
+    <path
+        android:fillColor="#D6E9DD"
+        android:pathData="M44,33 L64,38 L64,77 L44,72 Z" />
+    <!-- red plot -->
+    <path
+        android:fillColor="#DC2626"
+        android:pathData="M47,46 L61,48 L60,62 L46,60 Z" />
+</vector>
