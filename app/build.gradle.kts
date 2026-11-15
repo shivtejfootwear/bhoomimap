@@ -8,6 +8,7 @@ fun envOr(name: String, fallback: String): String = env(name).ifBlank { fallback
 
 // Public values (safe inside the app; data is protected by Supabase RLS rules)
 val publicSupabaseUrl = "https://zhjpkttaxnprprwmibwj.supabase.co"
+val publicWebClientId = "346965726862-ld60902ihdh0h3nhdluuamtac24gfc53.apps.googleusercontent.com"
 val publicSupabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpoanBrdHRheG5wcnByd21pYndqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2NzUzOTYsImV4cCI6MjExMDI1MTM5Nn0.r9BZVj87KtVVA42XqTInlSCFjFJsu8P7JU5MWtVdVOw"
 val runNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
 
@@ -23,7 +24,7 @@ android {
         versionName = "1.0.$runNumber"
         buildConfigField("String", "SUPABASE_URL", "\"${envOr("SUPABASE_URL", publicSupabaseUrl)}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${envOr("SUPABASE_ANON_KEY", publicSupabaseAnonKey)}\"")
-        buildConfigField("String", "WEB_CLIENT_ID", "\"${env("WEB_CLIENT_ID")}\"")
+        buildConfigField("String", "WEB_CLIENT_ID", "\"${envOr("WEB_CLIENT_ID", publicWebClientId)}\"")
         manifestPlaceholders["MAPS_API_KEY"] = env("MAPS_API_KEY")
     }
 
