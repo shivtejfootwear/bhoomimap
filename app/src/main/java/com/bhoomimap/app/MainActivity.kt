@@ -192,7 +192,22 @@ fun App(activity: ComponentActivity) {
             "privacy" -> LegalScreen("Privacy Policy", LegalText.privacy) { page = null }
             "converter" -> ConverterScreen { page = null }
             "guides" -> GuidesScreen { page = null }
-            else -> SafetyScreen(loggedIn, onBack = { page = null }, onOpen = openPage)
+            "rules" -> RulesScreen { page = null }
+            else -> {
+                val p = page ?: ""
+                val enquiry = if (p.startsWith("enquiry:")) leads.firstOrNull { it.id == p.removePrefix("enquiry:") } else null
+                if (enquiry != null) {
+                    EnquiryScreen(
+                        lead = enquiry,
+                        listing = listings.firstOrNull { it.id == enquiry.listingId },
+                        onBack = { page = null },
+                        onChanged = { scope.launch { try { leads = Repo.myLeads() } catch (_: Exception) {} } },
+                        onRules = { page = "rules" },
+                    )
+                } else {
+                    SafetyScreen(loggedIn, onBack = { page = null }, onOpen = openPage)
+                }
+            }
         }
     } else if (!loggedIn && !skipped) {
         LoginScreen(
@@ -219,6 +234,7 @@ fun App(activity: ComponentActivity) {
                 onInterested = { askInterest(open) },
                 onSave = { toggleSave(open) },
                 onSafety = { page = "safety" },
+                onEnquiry = { page = "enquiry:$it" },
                 nearby = listings.filter { it.id != open.id && distanceKm(it.center, open.center) <= 5.0 }
                     .sortedBy { distanceKm(it.center, open.center) }.take(5),
                 onOpenOther = { openId = it.id },
@@ -398,8 +414,8 @@ fun App(activity: ComponentActivity) {
             onSend = { msg ->
                 scope.launch {
                     try {
-                        Repo.report(msg)
-                        toast("Thank you. Our team will check this land.")
+                        Repo.report(msg, "report_listing", l.id)
+                        toast("Thank you. Ticket created – our team will check this land within 48 hours.")
                         reportFor = null
                     } catch (e: Exception) {
                         toast("Could not send. Please try again.")
@@ -456,6 +472,8 @@ fun LoginScreen(onGoogle: () -> Unit, onOpen: (String) -> Unit, onSkip: () -> Un
         Text("BhoomiMap", fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(TAGLINE, color = Green, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(8.dp))
+        PromiseChips()
         Spacer(Modifier.height(20.dp))
         HowItWorksCard()
         Spacer(Modifier.height(14.dp))
@@ -642,6 +660,7 @@ fun MapScreen(
                         if (picked.verified) Text("Checked by Team", color = Green, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Text(picked.title.ifBlank { Fmt.shortArea(picked.areaSqft) }, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                    Text(picked.listedByLabel, color = Color(0xFF14502F), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Text(
                         listOf(Fmt.sqft(picked.areaSqft), Fmt.guntha(picked.areaSqft), picked.place)
                             .filter { it.isNotBlank() }.joinToString(" · "),
@@ -709,6 +728,7 @@ fun DetailsScreen(
     onOpenOther: (Listing) -> Unit,
     onShare: () -> Unit,
     onReport: () -> Unit,
+    onEnquiry: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var detail by remember(l.id) { mutableStateOf<ListingDetail?>(null) }
@@ -789,6 +809,7 @@ fun DetailsScreen(
                 }
                 InfoCard {
                     InfoRow("Land Type", if (l.kind == "farm") "Farm Land" else "Plot")
+                    InfoRow("Listed by", if (l.listedBy == "agent") "Partner Agent" else "Owner")
                     if (l.facing.isNotBlank()) InfoRow("Facing", l.facing)
                     if (l.roadFt > 0) InfoRow("Road Width", Fmt.ft(l.roadFt))
                     InfoRow("Documents", if (l.verified) "Checked by Team" else "Being checked", if (l.verified) Green else Muted)
@@ -811,6 +832,11 @@ fun DetailsScreen(
                             trailing = { Text(String.format(Locale.US, "%.1f km", distanceKm(n.center, l.center)), fontSize = 12.sp, color = Muted) },
                             onClick = { onOpenOther(n) },
                         )
+                    }
+                }
+                if (lead != null && lead.id.isNotBlank()) {
+                    Button(onClick = { onEnquiry(lead.id) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
+                        Text("My Enquiry – Verify Caller & Stop Calls")
                     }
                 }
                 OutlinedButton(onClick = onSafety, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
@@ -916,6 +942,11 @@ fun PhotoSection(title: String, photos: List<String>, team: Boolean) {
                             model = url, contentDescription = title, contentScale = ContentScale.Crop,
                             modifier = Modifier.size(width = 150.dp, height = 110.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFFE1E4DD)),
                         )
+                        Text(
+                            "For " + (Session.name ?: Session.email ?: "you") + " only",
+                            color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp,
+                            modifier = Modifier.align(Alignment.BottomStart).padding(6.dp).background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(6.dp)).padding(horizontal = 4.dp),
+                        )
                         if (team) {
                             Icon(
                                 Icons.Default.CheckCircle, contentDescription = "Taken by our team", tint = Green,
@@ -984,6 +1015,7 @@ fun InterestDialog(l: Listing, onDismiss: () -> Unit, onSend: (String, String) -
                 )
                 err?.let { Text(it, color = Red, fontSize = 13.sp) }
                 Text("By sending, you allow our team to call you about this plot.", fontSize = 12.sp, color = Muted)
+                Text("BhoomiMap never asks for money before the deal.", fontSize = 12.sp, color = Red, fontWeight = FontWeight.SemiBold)
             }
         },
         confirmButton = {
@@ -1074,7 +1106,7 @@ fun ProfileScreen(
                     ListingRow(
                         l,
                         trailing = { Tag(Fmt.status(ld.status), Color(0xFFFFF4E5), Color(0xFF8A4B00)) },
-                        onClick = { onOpen(l) },
+                        onClick = { if (ld.id.isNotBlank()) onPage("enquiry:${ld.id}") else onOpen(l) },
                     )
                 }
             }
@@ -1093,6 +1125,9 @@ fun ProfileScreen(
         }
         OutlinedButton(onClick = { onPage("guides") }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
             Text("Land Buying Guide")
+        }
+        OutlinedButton(onClick = { onPage("rules") }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
+            Text("Promise & Rules")
         }
         OutlinedButton(onClick = { onPage("safety") }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
             Text("Safety & Help")

@@ -1,0 +1,2 @@
+-ignorewarnings
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod

@@ -41,19 +41,25 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           WEB_CLIENT_ID: ${{ secrets.WEB_CLIENT_ID }}
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: gradle :app:assembleRelease :team:assembleRelease --no-daemon --stacktrace
 
-      - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk BhoomiMap-v1.0.${{ github.run_number }}.apk
+      - name: Rename APKs
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk BhoomiMap-v1.0.${{ github.run_number }}.apk
+          cp team/build/outputs/apk/release/team-release.apk BhoomiMap-Team-v1.0.${{ github.run_number }}.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: BhoomiMap-apk
-          path: BhoomiMap-v1.0.${{ github.run_number }}.apk
+          path: |
+            BhoomiMap-v1.0.${{ github.run_number }}.apk
+            BhoomiMap-Team-v1.0.${{ github.run_number }}.apk
 
       - name: Publish release (easy download on phone)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: BhoomiMap v1.0.${{ github.run_number }}
-          files: BhoomiMap-v1.0.${{ github.run_number }}.apk
+          files: |
+            BhoomiMap-v1.0.${{ github.run_number }}.apk
+            BhoomiMap-Team-v1.0.${{ github.run_number }}.apk

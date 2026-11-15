@@ -1,0 +1,32 @@
+name: Nightly Database Backup
+
+on:
+  schedule:
+    - cron: '30 21 * * *'   # 3:00 AM India time
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Backup and encrypt
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+        run: |
+          if [ -z "$DB_URL" ] || [ -z "$BACKUP_PASSWORD" ]; then
+            echo "::notice::Backup skipped. Add SUPABASE_DB_URL and BACKUP_PASSWORD secrets to turn on nightly backups."
+            exit 0
+          fi
+          NAME=bhoomimap-backup-$(date -u +%Y-%m-%d)
+          docker run --rm -e DB_URL postgres:17 sh -c 'pg_dump "$DB_URL" --no-owner --no-privileges -n public -n storage' > db.sql
+          gzip db.sql
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in db.sql.gz -out "$NAME.sql.gz.enc" -pass env:BACKUP_PASSWORD
+          echo "NAME=$NAME" >> $GITHUB_ENV
+      - name: Keep backup for 30 days
+        if: env.NAME != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.sql.gz.enc
+          retention-days: 30

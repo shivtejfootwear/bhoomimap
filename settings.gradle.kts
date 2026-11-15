@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "BhoomiMap"
-include(":app")
+include(":app", ":team")

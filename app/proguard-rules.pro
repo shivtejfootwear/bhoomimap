@@ -1,0 +1,6 @@
+-ignorewarnings
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-if class androidx.credentials.CredentialManager
+-keep class androidx.credentials.playservices.** { *; }
+-keep class com.google.android.libraries.identity.googleid.** { *; }
+-keep class androidx.credentials.** { *; }

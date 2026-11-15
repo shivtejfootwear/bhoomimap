@@ -33,7 +33,9 @@ data class Listing(
     val verified: Boolean,
     val boundary: List<LatLng>,
     val createdAt: String = "",
+    val listedBy: String = "owner",
 ) {
+    val listedByLabel: String get() = if (listedBy == "agent") "Listed by Partner Agent" else "Listed by Owner"
     val center: LatLng
         get() = LatLng(boundary.map { it.latitude }.average(), boundary.map { it.longitude }.average())
     val kindLabel: String get() = if (kind == "farm") "FARM LAND" else "PLOT"
@@ -48,7 +50,20 @@ data class ListingDetail(
     val teamPhotos: List<String>,
 )
 
-data class Lead(val listingId: String, val status: String)
+data class Lead(
+    val listingId: String,
+    val status: String,
+    val id: String = "",
+    val callAttempts: Int = 0,
+    val stopCalls: Boolean = false,
+    val assigned: Boolean = false,
+)
+
+data class Caller(val name: String, val role: String, val phone: String)
+
+data class NumberView(val viewer: String, val at: String)
+
+data class MyTicket(val id: Long, val kind: String, val message: String, val status: String, val reply: String, val createdAt: String)
 
 data class Agent(val id: String, val name: String, val area: String, val deals: Int)
 
@@ -137,7 +152,8 @@ object Supa {
             c.connectTimeout = 15000
             c.readTimeout = 20000
             c.setRequestProperty("apikey", key)
-            c.setRequestProperty("Authorization", "Bearer " + (token ?: key))
+            val bearer = token ?: if (key.startsWith("eyJ")) key else null
+            if (bearer != null) c.setRequestProperty("Authorization", "Bearer $bearer")
             c.setRequestProperty("Content-Type", "application/json")
             if (prefer != null) c.setRequestProperty("Prefer", prefer)
             if (body != null) {
@@ -254,7 +270,7 @@ object Repo {
     suspend fun listings(): List<Listing> {
         val r = Supa.request(
             "GET",
-            "/rest/v1/listings?select=id,title,kind,place,area_sqft,facing,road_width_ft,verified,boundary,created_at&status=eq.live&district=eq.Solapur&order=created_at.desc"
+            "/rest/v1/listings?select=id,title,kind,place,area_sqft,facing,road_width_ft,verified,boundary,created_at,listed_by&status=eq.live&district=eq.Solapur&order=created_at.desc"
         )
         val arr = JSONArray(r)
         return (0 until arr.length()).mapNotNull { i ->
@@ -276,6 +292,7 @@ object Repo {
                 verified = o.optBoolean("verified"),
                 boundary = pts,
                 createdAt = o.optString("created_at"),
+                listedBy = o.optString("listed_by", "owner").ifBlank { "owner" },
             )
         }
     }
@@ -290,16 +307,58 @@ object Repo {
         fun d(k: String) = o.optDouble(k, 0.0).let { if (it.isNaN()) 0.0 else it }
         return ListingDetail(
             d("front_ft"), d("back_ft"), d("left_ft"), d("right_ft"),
-            strList(o.optJSONArray("owner_photos")), strList(o.optJSONArray("team_photos"))
+            signAll(strList(o.optJSONArray("owner_photos")), t), signAll(strList(o.optJSONArray("team_photos")), t)
         )
+    }
+
+    /** Photos are private. Each one gets a link that works for 1 hour, only for unlocked buyers. */
+    private suspend fun signAll(paths: List<String>, t: String): List<String> = paths.mapNotNull { p ->
+        if (p.startsWith("http")) return@mapNotNull p
+        try {
+            val r = JSONObject(Supa.request("POST", "/storage/v1/object/sign/plot-photos/$p", JSONObject().put("expiresIn", 3600).toString(), t))
+            val s = r.optString("signedURL").ifBlank { r.optString("signedUrl") }
+            if (s.isBlank()) null else Supa.url + "/storage/v1" + (if (s.startsWith("/")) s else "/$s")
+        } catch (_: Exception) { null }
     }
 
     suspend fun myLeads(): List<Lead> {
         val t = Session.token() ?: return emptyList()
-        val arr = JSONArray(Supa.request("GET", "/rest/v1/leads?select=listing_id,status", token = t))
+        val arr = JSONArray(Supa.request("GET", "/rest/v1/leads?select=id,listing_id,status,call_attempts,stop_calls,assigned_to&order=created_at.desc", token = t))
         return (0 until arr.length()).map {
             val o = arr.getJSONObject(it)
-            Lead(o.getString("listing_id"), o.optString("status", "new"))
+            Lead(
+                o.getString("listing_id"), o.optString("status", "new"), o.optString("id"),
+                o.optInt("call_attempts", 0), o.optBoolean("stop_calls", false), !o.isNull("assigned_to"),
+            )
+        }
+    }
+
+    suspend fun setStopCalls(leadId: String, stop: Boolean) {
+        val t = Session.token() ?: throw IllegalStateException("Please login first.")
+        Supa.request("POST", "/rest/v1/rpc/set_stop_calls", JSONObject().put("p_lead", leadId).put("p_stop", stop).toString(), t)
+    }
+
+    suspend fun myCaller(leadId: String): Caller? {
+        val t = Session.token() ?: return null
+        val r = Supa.request("POST", "/rest/v1/rpc/my_caller", JSONObject().put("p_lead", leadId).toString(), t).trim()
+        if (r.isEmpty() || r == "null") return null
+        val o = JSONObject(r)
+        return Caller(o.optString("name"), o.optString("role"), if (o.isNull("call_phone")) "" else o.optString("call_phone"))
+    }
+
+    suspend fun numberViews(leadId: String): List<NumberView> {
+        val t = Session.token() ?: return emptyList()
+        val arr = JSONArray(Supa.request("GET", "/rest/v1/number_views?lead_id=eq.${enc(leadId)}&select=viewer_name,at&order=at.desc", token = t))
+        return (0 until arr.length()).map { arr.getJSONObject(it).let { o -> NumberView(o.optString("viewer_name"), o.optString("at")) } }
+    }
+
+    suspend fun myTickets(): List<MyTicket> {
+        val t = Session.token() ?: return emptyList()
+        val arr = JSONArray(Supa.request("GET", "/rest/v1/tickets?select=id,kind,message,status,reply,created_at&order=created_at.desc&limit=50", token = t))
+        return (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            MyTicket(o.getLong("id"), o.optString("kind"), o.optString("message"), o.optString("status"),
+                if (o.isNull("reply")) "" else o.optString("reply"), o.optString("created_at"))
         }
     }
 
@@ -328,12 +387,11 @@ object Repo {
         }
     }
 
-    suspend fun report(message: String) {
+    suspend fun report(message: String, kind: String = "problem", listingId: String? = null) {
         val t = Session.token() ?: throw IllegalStateException("Please login first.")
-        Supa.request(
-            "POST", "/rest/v1/support_requests",
-            JSONObject().put("message", message).toString(), t, "return=minimal"
-        )
+        val body = JSONObject().put("message", message.take(1000)).put("kind", kind)
+        if (listingId != null) body.put("listing_id", listingId)
+        Supa.request("POST", "/rest/v1/tickets", body.toString(), t, "return=minimal")
     }
 
     suspend fun agents(): List<Agent> {
