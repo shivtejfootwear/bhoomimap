@@ -32,6 +32,7 @@ data class Listing(
     val roadFt: Double,
     val verified: Boolean,
     val boundary: List<LatLng>,
+    val createdAt: String = "",
 ) {
     val center: LatLng
         get() = LatLng(boundary.map { it.latitude }.average(), boundary.map { it.longitude }.average())
@@ -48,6 +49,47 @@ data class ListingDetail(
 )
 
 data class Lead(val listingId: String, val status: String)
+
+data class Agent(val id: String, val name: String, val area: String, val deals: Int)
+
+data class LandAlert(
+    val id: String,
+    val place: String,
+    val kind: String, // all | plot | farm
+    val minSqft: Double,
+    val maxSqft: Double, // 0 = no limit
+    val createdAt: String,
+) {
+    fun matches(l: Listing): Boolean =
+        (place.isBlank() || l.place.contains(place.trim(), ignoreCase = true) || l.title.contains(place.trim(), ignoreCase = true)) &&
+            (kind == "all" || kind == l.kind) &&
+            l.areaSqft >= minSqft && (maxSqft <= 0 || l.areaSqft <= maxSqft)
+
+    fun isNew(l: Listing): Boolean = l.createdAt > createdAt
+}
+
+/** Size filter used on the map and in alerts. maxSqft 0 = no limit. */
+data class SizeRange(val key: String, val label: String, val minSqft: Double, val maxSqft: Double)
+
+val SIZE_RANGES = listOf(
+    SizeRange("any", "Any Size", 0.0, 0.0),
+    SizeRange("s", "Under 10 Guntha", 0.0, 10890.0),
+    SizeRange("m", "10 Guntha – 1 Acre", 10890.0, 43560.0),
+    SizeRange("l", "1 – 5 Acre", 43560.0, 217800.0),
+    SizeRange("xl", "5+ Acre", 217800.0, 0.0),
+)
+
+fun SizeRange.has(v: Double) = v >= minSqft && (maxSqft <= 0 || v < maxSqft)
+
+/** Distance in km between two points. */
+fun distanceKm(a: LatLng, b: LatLng): Double {
+    val r = 6371.0
+    val dLat = Math.toRadians(b.latitude - a.latitude)
+    val dLon = Math.toRadians(b.longitude - a.longitude)
+    val h = Math.sin(dLat / 2).let { it * it } +
+        Math.cos(Math.toRadians(a.latitude)) * Math.cos(Math.toRadians(b.latitude)) * Math.sin(dLon / 2).let { it * it }
+    return 2 * r * Math.asin(Math.sqrt(h))
+}
 
 // ---------- Formatting ----------
 
@@ -212,7 +254,7 @@ object Repo {
     suspend fun listings(): List<Listing> {
         val r = Supa.request(
             "GET",
-            "/rest/v1/listings?select=id,title,kind,place,area_sqft,facing,road_width_ft,verified,boundary&status=eq.live&district=eq.Solapur"
+            "/rest/v1/listings?select=id,title,kind,place,area_sqft,facing,road_width_ft,verified,boundary,created_at&status=eq.live&district=eq.Solapur&order=created_at.desc"
         )
         val arr = JSONArray(r)
         return (0 until arr.length()).mapNotNull { i ->
@@ -233,6 +275,7 @@ object Repo {
                 roadFt = o.optDouble("road_width_ft", 0.0).let { if (it.isNaN()) 0.0 else it },
                 verified = o.optBoolean("verified"),
                 boundary = pts,
+                createdAt = o.optString("created_at"),
             )
         }
     }
@@ -291,6 +334,43 @@ object Repo {
             "POST", "/rest/v1/support_requests",
             JSONObject().put("message", message).toString(), t, "return=minimal"
         )
+    }
+
+    suspend fun agents(): List<Agent> {
+        val arr = JSONArray(Supa.request("GET", "/rest/v1/agents?select=id,name,area,deals&active=eq.true&order=deals.desc&limit=20"))
+        return (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            Agent(o.getString("id"), o.optString("name"), o.optString("area"), o.optInt("deals", 0))
+        }
+    }
+
+    suspend fun alerts(): List<LandAlert> {
+        val t = Session.token() ?: return emptyList()
+        val arr = JSONArray(Supa.request("GET", "/rest/v1/alerts?select=*&order=created_at.desc", token = t))
+        return (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            fun d(k: String) = o.optDouble(k, 0.0).let { v -> if (v.isNaN()) 0.0 else v }
+            LandAlert(o.getString("id"), o.optString("place"), o.optString("kind", "all"), d("min_sqft"), d("max_sqft"), o.optString("created_at"))
+        }
+    }
+
+    suspend fun addAlert(place: String, kind: String, size: SizeRange) {
+        val t = Session.token() ?: throw IllegalStateException("Please login first.")
+        val body = JSONObject().put("place", place.trim()).put("kind", kind)
+            .put("min_sqft", size.minSqft).put("max_sqft", size.maxSqft)
+        Supa.request("POST", "/rest/v1/alerts", body.toString(), t, "return=minimal")
+    }
+
+    suspend fun deleteAlert(id: String) {
+        val t = Session.token() ?: return
+        Supa.request("DELETE", "/rest/v1/alerts?id=eq.${enc(id)}", token = t, prefer = "return=minimal")
+    }
+
+    suspend fun sendSellRequest(name: String, phone: String, place: String, kind: String, area: String, note: String) {
+        val t = Session.token() ?: throw IllegalStateException("Please login first.")
+        val body = JSONObject().put("owner_name", name).put("phone", phone).put("place", place)
+            .put("kind", kind).put("area_text", area).put("note", note)
+        Supa.request("POST", "/rest/v1/sell_requests", body.toString(), t, "return=minimal")
     }
 
     suspend fun requestAccountDeletion() {

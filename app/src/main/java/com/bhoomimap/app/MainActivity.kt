@@ -47,6 +47,7 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
 import com.google.maps.android.compose.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -99,6 +100,10 @@ fun App(activity: ComponentActivity) {
     var interestFor by remember { mutableStateOf<Listing?>(null) }
     var page by rememberSaveable { mutableStateOf<String?>(null) }
     var consentFor by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var agents by remember { mutableStateOf<List<Agent>>(emptyList()) }
+    var alerts by remember { mutableStateOf<List<LandAlert>>(emptyList()) }
+    var agentPick by remember { mutableStateOf<Agent?>(null) }
+    var reportFor by remember { mutableStateOf<Listing?>(null) }
 
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
 
@@ -119,6 +124,14 @@ fun App(activity: ComponentActivity) {
             try {
                 saved = Repo.savedIds()
                 leads = Repo.myLeads()
+            } catch (_: Exception) {
+            }
+            try {
+                agents = Repo.agents()
+            } catch (_: Exception) {
+            }
+            try {
+                alerts = Repo.alerts()
             } catch (_: Exception) {
             }
             loggedIn = Session.loggedIn
@@ -177,6 +190,8 @@ fun App(activity: ComponentActivity) {
         when (page) {
             "terms" -> LegalScreen("Terms of Use", LegalText.terms) { page = null }
             "privacy" -> LegalScreen("Privacy Policy", LegalText.privacy) { page = null }
+            "converter" -> ConverterScreen { page = null }
+            "guides" -> GuidesScreen { page = null }
             else -> SafetyScreen(loggedIn, onBack = { page = null }, onOpen = openPage)
         }
     } else if (!loggedIn && !skipped) {
@@ -195,7 +210,7 @@ fun App(activity: ComponentActivity) {
         val open = listings.firstOrNull { it.id == openId }
         if (open != null) {
             BackHandler { openId = null }
-            DetailsScreen(
+            key(open.id) { DetailsScreen(
                 l = open,
                 lead = leads.firstOrNull { it.listingId == open.id },
                 isSaved = open.id in saved,
@@ -204,7 +219,12 @@ fun App(activity: ComponentActivity) {
                 onInterested = { askInterest(open) },
                 onSave = { toggleSave(open) },
                 onSafety = { page = "safety" },
-            )
+                nearby = listings.filter { it.id != open.id && distanceKm(it.center, open.center) <= 5.0 }
+                    .sortedBy { distanceKm(it.center, open.center) }.take(5),
+                onOpenOther = { openId = it.id },
+                onShare = { shareListing(ctx, open) },
+                onReport = { if (loggedIn) { reportFor = open } else { login { reportFor = open } } },
+            ) }
         } else {
             Scaffold(
                 containerColor = Ground,
@@ -222,6 +242,21 @@ fun App(activity: ComponentActivity) {
                         )
                         NavigationBarItem(
                             selected = tab == 2, onClick = { tab = 2 },
+                            icon = { Icon(Icons.Default.AddCircle, contentDescription = null) },
+                            label = { Text("Sell") },
+                        )
+                        NavigationBarItem(
+                            selected = tab == 3, onClick = { tab = 3 },
+                            icon = {
+                                val newCount = alerts.sumOf { a -> listings.count { a.matches(it) && a.isNew(it) } }
+                                BadgedBox(badge = { if (newCount > 0) Badge { Text(if (newCount > 9) "9+" else "$newCount") } }) {
+                                    Icon(Icons.Default.Notifications, contentDescription = null)
+                                }
+                            },
+                            label = { Text("Alerts") },
+                        )
+                        NavigationBarItem(
+                            selected = tab == 4, onClick = { tab = 4 },
                             icon = { Icon(Icons.Default.Person, contentDescription = null) },
                             label = { Text("Profile") },
                         )
@@ -235,11 +270,56 @@ fun App(activity: ComponentActivity) {
                             onRetry = { reload() },
                             onOpen = { openId = it.id },
                             onInterested = askInterest,
+                            agents = agents,
+                            onAgent = { agentPick = it },
                         )
                         1 -> SavedScreen(
                             plots = listings.filter { it.id in saved },
                             loggedIn = loggedIn,
                             onLogin = { login() },
+                            onOpen = { openId = it.id },
+                        )
+                        2 -> SellScreen(
+                            loggedIn = loggedIn,
+                            onLogin = { login() },
+                            onSend = { n, ph, pl, k, ar, nt, done ->
+                                scope.launch {
+                                    try {
+                                        Repo.sendSellRequest(n, ph, pl, k, ar, nt)
+                                        toast("Thank you! Our team will call you to check your land.")
+                                    } catch (e: Exception) {
+                                        toast("Could not send. Please try again.")
+                                    }
+                                    done()
+                                }
+                            },
+                        )
+                        3 -> AlertsScreen(
+                            loggedIn = loggedIn,
+                            alerts = alerts,
+                            listings = listings,
+                            onLogin = { login() },
+                            onAdd = { pl, k, sz ->
+                                scope.launch {
+                                    try {
+                                        Repo.addAlert(pl, k, sz)
+                                        alerts = Repo.alerts()
+                                        toast("Alert created.")
+                                    } catch (e: Exception) {
+                                        toast("Could not create alert. Please try again.")
+                                    }
+                                }
+                            },
+                            onDelete = { a ->
+                                scope.launch {
+                                    try {
+                                        Repo.deleteAlert(a.id)
+                                        alerts = alerts - a
+                                    } catch (e: Exception) {
+                                        toast("Could not delete. Please try again.")
+                                    }
+                                }
+                            },
                             onOpen = { openId = it.id },
                         )
                         else -> ProfileScreen(
@@ -250,6 +330,7 @@ fun App(activity: ComponentActivity) {
                                 loggedIn = false
                                 saved = emptySet()
                                 leads = emptyList()
+                                alerts = emptyList()
                             },
                             onDelete = {
                                 scope.launch {
@@ -264,6 +345,7 @@ fun App(activity: ComponentActivity) {
                                     loggedIn = false
                                     saved = emptySet()
                                     leads = emptyList()
+                                    alerts = emptyList()
                                 }
                             },
                             onOpen = { openId = it.id },
@@ -284,6 +366,46 @@ fun App(activity: ComponentActivity) {
             },
             onDismiss = { consentFor = null },
             onOpen = { consentFor = null; page = it },
+        )
+    }
+
+    agentPick?.let { a ->
+        AgentDialog(
+            a = a,
+            onDismiss = { agentPick = null },
+            onConnect = {
+                agentPick = null
+                val send = {
+                    scope.launch {
+                        try {
+                            Repo.report("Agent connect request | ${a.id} | ${a.name} | ${a.area}")
+                            toast("Our team will call you to connect with ${a.name}.")
+                        } catch (e: Exception) {
+                            toast("Could not send. Please try again.")
+                        }
+                    }
+                    Unit
+                }
+                if (loggedIn) send() else login { send() }
+            },
+        )
+    }
+
+    reportFor?.let { l ->
+        ReportDialog(
+            l = l,
+            onDismiss = { reportFor = null },
+            onSend = { msg ->
+                scope.launch {
+                    try {
+                        Repo.report(msg)
+                        toast("Thank you. Our team will check this land.")
+                        reportFor = null
+                    } catch (e: Exception) {
+                        toast("Could not send. Please try again.")
+                    }
+                }
+            },
         )
     }
 
@@ -364,20 +486,44 @@ fun MapScreen(
     onRetry: () -> Unit,
     onOpen: (Listing) -> Unit,
     onInterested: (Listing) -> Unit,
+    agents: List<Agent>,
+    onAgent: (Agent) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var filter by rememberSaveable { mutableStateOf("all") }
+    var size by rememberSaveable { mutableStateOf("any") }
+    var query by rememberSaveable { mutableStateOf("") }
     var pickedId by rememberSaveable { mutableStateOf<String?>(null) }
     var threeD by rememberSaveable { mutableStateOf(false) }
+    var satellite by rememberSaveable { mutableStateOf(true) }
     val camera = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(SOLAPUR, 8.5f) }
-    val shown = listings.filter { filter == "all" || it.kind == filter }
+    val range = SIZE_RANGES.first { it.key == size }
+    val q = query.trim()
+    val shown = listings.filter {
+        (filter == "all" || it.kind == filter) && range.has(it.areaSqft) &&
+            (q.isEmpty() || it.place.contains(q, ignoreCase = true) || it.title.contains(q, ignoreCase = true))
+    }
     val picked = shown.firstOrNull { it.id == pickedId }
+
+    LaunchedEffect(q) {
+        if (q.isEmpty()) return@LaunchedEffect
+        delay(700)
+        val hits = listings.filter { it.place.contains(q, ignoreCase = true) || it.title.contains(q, ignoreCase = true) }
+        if (hits.isNotEmpty()) {
+            val b = LatLngBounds.builder()
+            hits.forEach { h -> h.boundary.forEach { b.include(it) } }
+            try {
+                camera.animate(CameraUpdateFactory.newLatLngBounds(b.build(), 160))
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = camera,
-            properties = MapProperties(mapType = MapType.HYBRID),
+            properties = MapProperties(mapType = if (satellite) MapType.HYBRID else MapType.NORMAL),
             uiSettings = MapUiSettings(zoomControlsEnabled = false, mapToolbarEnabled = false),
             onMapClick = { pickedId = null },
         ) {
@@ -418,29 +564,27 @@ fun MapScreen(
                     Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 18.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Default.Place, contentDescription = null, tint = Red)
+                    Icon(Icons.Default.Search, contentDescription = null, tint = Red)
                     Spacer(Modifier.width(10.dp))
-                    Text("BhoomiMap · Solapur", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Text("${shown.size} for sale", fontSize = 13.sp, color = Muted)
+                    Box(Modifier.weight(1f)) {
+                        if (query.isEmpty()) Text("Search village or taluka", fontSize = 15.sp, color = Muted)
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = query,
+                            onValueChange = { query = it.take(40); pickedId = null },
+                            singleLine = true,
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+                    } else {
+                        Text("${shown.size} for sale", fontSize = 13.sp, color = Muted)
+                    }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("all" to "All Land", "plot" to "Plots", "farm" to "Farm Land").forEach { (k, label) ->
-                    FilterChip(
-                        selected = filter == k,
-                        onClick = {
-                            filter = k
-                            pickedId = null
-                        },
-                        label = { Text(label) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = Color.White,
-                            selectedContainerColor = Green,
-                            selectedLabelColor = Color.White,
-                        ),
-                    )
-                }
-            }
+            KindChips(filter) { filter = it; pickedId = null }
+            SizeChips(size) { size = it; pickedId = null }
             when {
                 loading -> StatusCard { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp); Text("Loading plots…") }
                 error != null -> StatusCard {
@@ -448,6 +592,7 @@ fun MapScreen(
                     TextButton(onClick = onRetry) { Text("Retry") }
                 }
                 listings.isEmpty() -> StatusCard { Text("No plots listed yet in Solapur. New plots coming soon.") }
+                shown.isEmpty() -> StatusCard { Text("No land matches. Try another filter or create an alert.") }
             }
         }
 
@@ -470,9 +615,17 @@ fun MapScreen(
                 contentColor = if (threeD) Color.White else Color.Black,
             ) { Text("3D", fontWeight = FontWeight.Bold) }
             SmallFloatingActionButton(
+                onClick = { satellite = !satellite },
+                containerColor = Color.White,
+            ) { Text(if (satellite) "Map" else "Sat", fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+            SmallFloatingActionButton(
                 onClick = { scope.launch { camera.animate(CameraUpdateFactory.newLatLngZoom(SOLAPUR, 8.5f)) } },
                 containerColor = Color.White,
             ) { Icon(Icons.Default.Home, contentDescription = "Show all Solapur") }
+        }
+
+        if (picked == null && agents.isNotEmpty()) {
+            Box(Modifier.align(Alignment.BottomCenter).padding(10.dp)) { TopAgentsRow(agents, onAgent) }
         }
 
         if (picked != null) {
@@ -552,6 +705,10 @@ fun DetailsScreen(
     onInterested: () -> Unit,
     onSave: () -> Unit,
     onSafety: () -> Unit,
+    nearby: List<Listing>,
+    onOpenOther: (Listing) -> Unit,
+    onShare: () -> Unit,
+    onReport: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var detail by remember(l.id) { mutableStateOf<ListingDetail?>(null) }
@@ -570,6 +727,8 @@ fun DetailsScreen(
             title = { Text("Land Details") },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") } },
             actions = {
+                IconButton(onClick = onShare) { Icon(Icons.Default.Share, contentDescription = "Share") }
+                IconButton(onClick = onReport) { Icon(Icons.Default.Warning, contentDescription = "Report this land") }
                 IconButton(onClick = onSave) {
                     Icon(
                         if (isSaved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -643,6 +802,16 @@ fun DetailsScreen(
                         PhotoSection("Owner Photos", d.ownerPhotos, false)
                     }
                     else -> LockedCard(lead, onInterested)
+                }
+                if (nearby.isNotEmpty()) {
+                    Text("Nearby Land for Sale (within 5 km)", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    nearby.forEach { n ->
+                        ListingRow(
+                            n,
+                            trailing = { Text(String.format(Locale.US, "%.1f km", distanceKm(n.center, l.center)), fontSize = 12.sp, color = Muted) },
+                            onClick = { onOpenOther(n) },
+                        )
+                    }
                 }
                 OutlinedButton(onClick = onSafety, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
                     Text("Safe Payment Rules & Help")
@@ -918,6 +1087,13 @@ fun ProfileScreen(
             }
         }
         Spacer(Modifier.height(4.dp))
+        Text("Tools", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        OutlinedButton(onClick = { onPage("converter") }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
+            Text("Area Converter")
+        }
+        OutlinedButton(onClick = { onPage("guides") }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
+            Text("Land Buying Guide")
+        }
         OutlinedButton(onClick = { onPage("safety") }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
             Text("Safety & Help")
         }
